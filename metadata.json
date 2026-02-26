@@ -1,0 +1,5 @@
+{
+  "name": "Singrar - Navegação",
+  "description": "Navegação em pequenas embarcações, jetski e barcos com motor de popa.",
+  "requestFramePermissions": ["geolocation"]
+}

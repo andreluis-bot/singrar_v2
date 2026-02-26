@@ -1,0 +1,265 @@
+@import "tailwindcss";
+
+/* ===== FONTES NATIVAS DO SISTEMA ===== */
+:root {
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue',
+    'Segoe UI', 'Roboto', system-ui, sans-serif;
+
+  /* Paleta SeaTrack */
+  --color-bg-primary: #0a192f;
+  --color-bg-secondary: #112240;
+  --color-bg-tertiary: #233554;
+  --color-text-primary: #e6f1ff;
+  --color-text-secondary: #8892b0;
+  --color-accent-cyan: #64ffda;
+  --color-accent-blue: #00e5ff;
+  --color-accent-orange: #ff6b00;
+
+  /* Safe areas */
+  --sat: env(safe-area-inset-top, 0px);
+  --sar: env(safe-area-inset-right, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+}
+
+/* ===== RESET MOBILE ===== */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+}
+
+html {
+  /* Previne zoom em duplo toque */
+  touch-action: manipulation;
+  /* Texto nítido */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  overflow: hidden;
+  overscroll-behavior: none;
+  -webkit-overflow-scrolling: touch;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* Remove delay de 300ms em touch */
+  touch-action: manipulation;
+}
+
+#root {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+}
+
+/* ===== INPUTS — sem zoom no iOS ===== */
+input[type="text"],
+input[type="email"],
+input[type="password"],
+input[type="number"],
+input[type="search"],
+input[type="tel"],
+textarea,
+select {
+  font-size: 16px !important;
+}
+
+/* ===== SCROLLBARS ===== */
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(100, 255, 218, 0.2) transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 3px;
+  height: 3px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(100, 255, 218, 0.2);
+  border-radius: 99px;
+}
+
+.hide-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* ===== SKELETON LOADING ===== */
+.skeleton {
+  background: linear-gradient(90deg,
+      rgba(35, 53, 84, 0.4) 25%,
+      rgba(35, 53, 84, 0.7) 50%,
+      rgba(35, 53, 84, 0.4) 75%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.8s ease infinite;
+}
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+/* ===== LEAFLET OVERRIDES ===== */
+.leaflet-container {
+  height: 100% !important;
+  width: 100% !important;
+  background: #0d2137 !important;
+  font-family: inherit !important;
+}
+
+.leaflet-popup-content-wrapper {
+  background: rgba(10, 25, 47, 0.97) !important;
+  backdrop-filter: blur(24px) !important;
+  -webkit-backdrop-filter: blur(24px) !important;
+  border: 1px solid rgba(100, 255, 218, 0.15) !important;
+  border-radius: 18px !important;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.7) !important;
+  color: #e6f1ff !important;
+  padding: 0 !important;
+}
+
+.leaflet-popup-content {
+  margin: 0 !important;
+  padding: 16px !important;
+}
+
+.leaflet-popup-tip {
+  background: rgba(10, 25, 47, 0.97) !important;
+}
+
+.leaflet-popup-close-button {
+  color: rgba(136, 146, 176, 0.8) !important;
+  font-size: 20px !important;
+  top: 10px !important;
+  right: 10px !important;
+  padding: 4px !important;
+}
+
+.leaflet-popup-close-button:hover {
+  color: white !important;
+  background: none !important;
+}
+
+/* Esconder controles padrão (usamos os nossos) */
+.leaflet-control-zoom,
+.leaflet-control-attribution {
+  display: none !important;
+}
+
+/* Pane do mapa sem outline */
+.leaflet-pane canvas,
+.leaflet-pane svg {
+  outline: none;
+}
+
+/* ===== ANIMAÇÕES GLOBAIS ===== */
+@keyframes pulse-glow {
+
+  0%,
+  100% {
+    box-shadow: 0 0 10px rgba(100, 255, 218, 0.3);
+  }
+
+  50% {
+    box-shadow: 0 0 25px rgba(100, 255, 218, 0.7);
+  }
+}
+
+@keyframes float {
+
+  0%,
+  100% {
+    transform: translateY(0px);
+  }
+
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes spin-slow {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+.animate-float {
+  animation: float 3s ease-in-out infinite;
+}
+
+.animate-spin-slow {
+  animation: spin-slow 3s linear infinite;
+}
+
+/* ===== GPU ACCELERATION ===== */
+.will-animate {
+  will-change: transform, opacity;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+/* ===== SAFE AREA UTILITIES ===== */
+.pt-safe {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.pl-safe {
+  padding-left: env(safe-area-inset-left, 0px);
+}
+
+.pr-safe {
+  padding-right: env(safe-area-inset-right, 0px);
+}
+
+/* ===== ACTIVE STATES PARA TOUCH ===== */
+/* Botões têm feedback visual imediato sem delay */
+button,
+[role="button"] {
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ===== RECHARTS DARK THEME ===== */
+.recharts-cartesian-axis-tick-value {
+  fill: #8892b0 !important;
+}
+
+.recharts-tooltip-wrapper {
+  outline: none !important;
+}

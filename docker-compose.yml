@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  singrar-web-portal:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    container_name: singrar-web
+    ports:
+      - "8008:80"
+    restart: unless-stopped
+    # Aqui futuramente adicionaremos os containers paralelos do Supabase (Postgres, Auth, Realtime)
+    # quando des-pausarmos o Backend nativo da Fase 5.
