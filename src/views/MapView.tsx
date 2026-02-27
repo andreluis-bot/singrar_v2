@@ -22,6 +22,7 @@ import {
   useMapEvents,
   Circle,
   Polyline,
+  Rectangle,
 } from 'react-leaflet';
 import L, { LeafletEvent } from 'leaflet';
 import { Capacitor } from '@capacitor/core';
@@ -52,6 +53,8 @@ import {
   Settings2, Users, Waves, Clock, Wind, Pen, MousePointer2, Compass,
   Eye, EyeOff, BookOpen, Route,
 } from 'lucide-react';
+
+import { WindyOverlay } from '../components/WeatherOverlay';
 
 /* ============================================================
    ÍCONES MEMOIZADOS (fora do componente = não recriados)
@@ -144,6 +147,26 @@ function calculateDistance(pts: { lat: number; lng: number }[]): number {
   return d;
 }
 
+function exportToGPX(route: import('../store').PlannedRoute) {
+  const gpx = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="SeaTrack Pro" xmlns="http://www.topografix.com/GPX/1/1">
+  <rte>
+    <name>${route.name}</name>
+    ${route.points.map(p => `
+    <rtept lat="${p.lat}" lon="${p.lng}">
+      <time>${new Date(route.createdAt).toISOString()}</time>
+    </rtept>`).join('')}
+  </rte>
+</gpx>`;
+  const blob = new Blob([gpx], { type: 'application/gpx+xml' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${route.name.replace(/\s+/g, '_')}.gpx`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 /* ============================================================
    SUB-COMPONENTES INTERNOS DO MAPA
    ============================================================ */
@@ -152,20 +175,35 @@ const MapController = memo(function MapController({
   centerOnUser,
   mapOrientation,
   deviceHeading,
+  anchorAlarm,
 }: {
   location: { lat: number; lng: number } | null;
   centerOnUser: boolean;
   mapOrientation: 'north' | 'course';
   deviceHeading: number | null;
+  anchorAlarm?: import('../store').AnchorAlarm;
 }) {
   const map = useMap();
+  const setAnchorAlarm = useStore((s) => s.setAnchorAlarm);
 
-  // Forçar redimencionamento assim que o mapa e o container montam
+  // Forçar redimencionamento agressivo
   useEffect(() => {
-    const timer = setTimeout(() => {
+    map.invalidateSize();
+    const timers = [
+      setTimeout(() => map.invalidateSize(), 150),
+      setTimeout(() => map.invalidateSize(), 500),
+      setTimeout(() => map.invalidateSize(), 1000),
+    ];
+
+    const observer = new ResizeObserver(() => {
       map.invalidateSize();
-    }, 100);
-    return () => clearTimeout(timer);
+    });
+    observer.observe(map.getContainer());
+
+    return () => {
+      timers.forEach(clearTimeout);
+      observer.disconnect();
+    };
   }, [map]);
 
   useEffect(() => {
@@ -190,6 +228,14 @@ const MapController = memo(function MapController({
     }
   }, [mapOrientation, deviceHeading, map]);
 
+  // Zoom no alarme de âncora
+  useEffect(() => {
+    if (anchorAlarm?.active && anchorAlarm?.zoomToAnchor) {
+      map.setView([anchorAlarm.lat, anchorAlarm.lng], 18, { animate: true, duration: 1 });
+      setAnchorAlarm({ zoomToAnchor: false }); // Consome o evento
+    }
+  }, [anchorAlarm, map, setAnchorAlarm]);
+
   return null;
 });
 
@@ -197,19 +243,24 @@ const MapController = memo(function MapController({
 const MapClickHandler = memo(function MapClickHandler({
   isDrawingMode,
   onMapClick,
+  isSelectingOffline,
+  onOfflineClick,
 }: {
   isDrawingMode: boolean;
   onMapClick: (latlng: L.LatLng) => void;
+  isSelectingOffline?: boolean;
+  onOfflineClick?: (latlng: L.LatLng) => void;
 }) {
   const map = useMapEvents({
     click(e) {
-      if (isDrawingMode) onMapClick(e.latlng);
+      if (isSelectingOffline && onOfflineClick) onOfflineClick(e.latlng);
+      else if (isDrawingMode) onMapClick(e.latlng);
     },
   });
 
-  // Bloquear e desbloquear interações do mapa com base no isDrawingMode
+  // Bloquear e desbloquear interações do mapa com base no isDrawingMode ou isSelectingOffline
   useEffect(() => {
-    if (isDrawingMode) {
+    if (isDrawingMode || isSelectingOffline) {
       map.dragging.disable();
       map.touchZoom.disable();
       map.scrollWheelZoom.disable();
@@ -220,7 +271,7 @@ const MapClickHandler = memo(function MapClickHandler({
       map.scrollWheelZoom.enable();
       map.doubleClickZoom.enable();
     }
-  }, [isDrawingMode, map]);
+  }, [isDrawingMode, isSelectingOffline, map]);
 
   return null;
 });
@@ -281,6 +332,15 @@ export const MapView = memo(function MapView({ radarEnabled, connectedUsers }: M
   const [showMapControls, setShowMapControls] = useState(false);
   const [isMapLoaded, setIsMapLoaded] = useState(false);
   const [routeSpeed, setRouteSpeed] = useState(15);
+  const [showHazardModal, setShowHazardModal] = useState(false);
+  const [hazardType, setHazardType] = useState<'hazard' | 'ramp' | 'gas' | 'marina' | 'hangout' | 'fishing'>('hazard');
+  const [hazardDesc, setHazardDesc] = useState('');
+  const [distanceUnit, setDistanceUnit] = useState<'NM' | 'KM'>('NM');
+  const [selectedWaypoint, setSelectedWaypoint] = useState<typeof waypoints[0] | null>(null);
+  const [isRecordingAudio, setIsRecordingAudio] = useState(false);
+  const [isSelectingOfflineArea, setIsSelectingOfflineArea] = useState(false);
+  const [offlineStartPoint, setOfflineStartPoint] = useState<L.LatLng | null>(null);
+  const [offlineAreaBounds, setOfflineAreaBounds] = useState<L.LatLngBounds | null>(null);
 
   const mapRef = useRef<L.Map | null>(null);
 
@@ -329,7 +389,14 @@ export const MapView = memo(function MapView({ radarEnabled, connectedUsers }: M
 
   const handleDropAnchor = useCallback(async () => {
     if (!location) return;
-    setAnchorAlarm({ active: true, lat: location.lat, lng: location.lng, radius: anchorRadius });
+    setAnchorAlarm({
+      active: true,
+      lat: location.lat,
+      lng: location.lng,
+      radius: anchorRadius,
+      zoomToAnchor: true
+    });
+    setCenterOnUser(true);
     setShowAnchorModal(false);
     await hapticHeavy();
   }, [location, anchorRadius, setAnchorAlarm]);
@@ -342,19 +409,69 @@ export const MapView = memo(function MapView({ radarEnabled, connectedUsers }: M
   const handleAddWaypoint = useCallback(
     async (type: 'fish' | 'anchor' | 'hazard' | 'point') => {
       if (!location) return;
-      const icons: Record<string, { icon: string; color: string; name: string }> = {
-        fish: { icon: '🐟', color: '#22c55e', name: 'Ponto de Pesca' },
-        anchor: { icon: '⚓', color: '#64ffda', name: 'Fundeadouro' },
-        hazard: { icon: '⚠️', color: '#f59e0b', name: 'Perigo' },
-        point: { icon: '📍', color: '#3b82f6', name: 'Waypoint' },
-      };
-      const cfg = icons[type];
-      addWaypoint({ lat: location.lat, lng: location.lng, ...cfg });
+
+      if (type === 'fish') {
+        setCatchSpecies('');
+        setCatchWeight('');
+        setCatchLength('');
+        setLogTitle('Nova Captura');
+        setShowCatchModal(true);
+      } else if (type === 'hazard') {
+        setHazardType('hazard');
+        setHazardDesc('');
+        setShowHazardModal(true);
+      } else if (type === 'anchor') {
+        addWaypoint({
+          lat: location.lat,
+          lng: location.lng,
+          icon: '⚓',
+          color: '#64ffda',
+          name: 'Fundeadouro'
+        });
+      } else {
+        addWaypoint({
+          lat: location.lat,
+          lng: location.lng,
+          icon: '📍',
+          color: '#3b82f6',
+          name: 'Waypoint'
+        });
+      }
+
       setShowActionMenu(false);
       await hapticSuccess();
     },
     [location, addWaypoint]
   );
+
+  const handleSaveCatch = useCallback(async () => {
+    if (!location) return;
+    const wpId = crypto.randomUUID();
+
+    // 1. Adiciona como Waypoint
+    addWaypoint({
+      lat: location.lat,
+      lng: location.lng,
+      name: `Pesca: ${catchSpecies || 'Peixe'}`,
+      icon: '🐟',
+      color: '#22c55e',
+    });
+
+    // 2. Adiciona ao Logbook
+    addLogEntry({
+      lat: location.lat,
+      lng: location.lng,
+      type: 'fishing',
+      title: logTitle || 'Captura de Pesca',
+      notes: `Espécie: ${catchSpecies}, Peso: ${catchWeight}kg, Tam: ${catchLength}cm`,
+      species: catchSpecies,
+      weight: parseFloat(catchWeight),
+      length: parseFloat(catchLength),
+    });
+
+    setShowCatchModal(false);
+    await hapticSuccess();
+  }, [location, catchSpecies, catchWeight, catchLength, logTitle, addWaypoint, addLogEntry]);
 
   const handleCenterOnUser = useCallback(async () => {
     setCenterOnUser(true);
@@ -478,14 +595,39 @@ export const MapView = memo(function MapView({ radarEnabled, connectedUsers }: M
           />
         )}
 
+        {/* Windy Overlay */}
+        {settings?.showWeatherLayer && location && (
+          <WindyOverlay
+            lat={location.lat}
+            lng={location.lng}
+            type={settings.weatherLayerType || 'wind'}
+          />
+        )}
+
         {/* Controladores */}
         <MapController
           location={location}
           centerOnUser={centerOnUser}
           mapOrientation={mapOrientation}
           deviceHeading={deviceHeading}
+          anchorAlarm={anchorAlarm}
         />
-        <MapClickHandler isDrawingMode={isDrawingMode} onMapClick={handleMapClick} />
+        <MapClickHandler
+          isDrawingMode={isDrawingMode}
+          onMapClick={handleMapClick}
+          isSelectingOffline={isSelectingOfflineArea}
+          onOfflineClick={(latlng) => {
+            if (!offlineStartPoint) {
+              setOfflineStartPoint(latlng);
+              hapticLight();
+            } else {
+              const bounds = L.latLngBounds(offlineStartPoint, latlng);
+              setOfflineAreaBounds(bounds);
+              setOfflineStartPoint(null);
+              hapticSuccess();
+            }
+          }}
+        />
 
         {/* Localização do usuário */}
         {location && (
@@ -507,10 +649,26 @@ export const MapView = memo(function MapView({ radarEnabled, connectedUsers }: M
             icon={vesselIconCache(u.heading, u.sos)}
           >
             <Popup>
-              <div className="text-[#0a192f] p-1 font-bold">
-                <p className="text-sm">{u.email}</p>
-                <p>Speed: {((u.speed || 0) * 1.94384).toFixed(1)} kt</p>
-                <p>Heading: {Math.round(u.heading || 0)}°</p>
+              <div className="text-[#0a192f] p-1 font-bold min-w-[120px]">
+                {u.sos && (
+                  <div className="bg-red-500 text-white px-2 py-1.5 rounded mb-2 text-center animate-pulse text-[10px]">
+                    🚨 EMERGÊNCIA SOS
+                  </div>
+                )}
+                <p className="text-xs">{u.email?.split('@')[0] || 'Embarcação'}</p>
+                <div className="text-[10px] mt-1 text-[#4a5568]">
+                  <p>Velocidade: {((u.speed || 0) * 1.94384).toFixed(1)} kt</p>
+                  <p>Rumo: {Math.round(u.heading || 0)}°</p>
+                  <p className="mt-1 opacity-60">{u.lat.toFixed(5)}, {u.lng.toFixed(5)}</p>
+                </div>
+                <a
+                  href={`https://www.google.com/maps?q=${u.lat},${u.lng}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="block mt-3 bg-[#0a192f] text-white text-center py-2 rounded-lg text-[10px] uppercase font-black tracking-wider"
+                >
+                  Google Maps
+                </a>
               </div>
             </Popup>
           </Marker>
@@ -522,16 +680,13 @@ export const MapView = memo(function MapView({ radarEnabled, connectedUsers }: M
             key={wp.id}
             position={[wp.lat, wp.lng]}
             icon={waypointIcons(wp)}
-          >
-            <Popup>
-              <div className="text-white p-1">
-                <p className="font-bold text-sm">{wp.name}</p>
-                <p className="text-xs text-[#8892b0]">
-                  {wp.lat.toFixed(5)}, {wp.lng.toFixed(5)}
-                </p>
-              </div>
-            </Popup>
-          </Marker>
+            eventHandlers={{
+              click: () => {
+                setSelectedWaypoint(wp);
+                hapticLight();
+              }
+            }}
+          />
         ))}
 
         {/* Trilha atual */}
@@ -631,6 +786,21 @@ export const MapView = memo(function MapView({ radarEnabled, connectedUsers }: M
               pathOptions={{ color: '#fbbf24', fillColor: '#fbbf24', fillOpacity: 0.06, weight: 2, dashArray: '6,6' }}
             />
           </>
+        )}
+
+        {/* --- ÁREA SELECIONADA PARA OFFLINE --- */}
+        {offlineAreaBounds && (
+          <Rectangle
+            bounds={offlineAreaBounds}
+            pathOptions={{ color: '#00e5ff', weight: 2, fillColor: '#00e5ff', fillOpacity: 0.1, dashArray: '5, 5' }}
+          />
+        )}
+        {offlineStartPoint && (
+          <Circle
+            center={offlineStartPoint}
+            radius={20}
+            pathOptions={{ color: '#64ffda', fillColor: '#64ffda', fillOpacity: 0.5 }}
+          />
         )}
       </MapContainer>
 
@@ -738,6 +908,7 @@ export const MapView = memo(function MapView({ radarEnabled, connectedUsers }: M
                 { label: 'Pesca', emoji: '🐟', action: () => handleAddWaypoint('fish') },
                 { label: 'Perigo', emoji: '⚠️', action: () => handleAddWaypoint('hazard') },
                 { label: 'Waypoint', emoji: '📍', action: () => handleAddWaypoint('point') },
+                { label: 'Mapa Offline', emoji: '📥', action: () => { setIsSelectingOfflineArea(true); setShowActionMenu(false); hapticLight(); } },
                 { label: isRecording ? 'Parar Rota' : 'Gravar Rota', emoji: isRecording ? '⏹' : '⏺', action: handleToggleRecording },
                 { label: 'Planejar Rota', emoji: '🗺️', action: async () => { setIsPlanningRoute(true); setShowActionMenu(false); await hapticLight(); } },
               ].map((item, i) => (
@@ -783,18 +954,17 @@ export const MapView = memo(function MapView({ radarEnabled, connectedUsers }: M
         </motion.button>
       </div>
 
-      {/* ---- GRAVANDO HUD ---- */}
+      {/* ---- BANNER DE GRAVAÇÃO ---- */}
       <AnimatePresence>
         {isRecording && (
           <motion.div
-            initial={{ opacity: 0, y: -20 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -20 }}
-            className="absolute top-16 left-4 right-4 z-[400] flex items-center justify-between px-4 py-3 rounded-2xl"
+            initial={{ y: -50, opacity: 0, x: '-50%' }}
+            animate={{ y: 0, opacity: 1, x: '-50%' }}
+            exit={{ y: -50, opacity: 0, x: '-50%' }}
+            className="fixed left-1/2 z-[200] flex items-center gap-3 px-4 py-2 rounded-full bg-red-500 shadow-[0_0_20px_rgba(239,68,68,0.4)] border border-white/20"
             style={{
-              background: 'rgba(239,68,68,0.15)',
-              border: '1px solid rgba(239,68,68,0.3)',
-              backdropFilter: 'blur(20px)',
+              top: 'calc(env(safe-area-inset-top, 0px) + 64px)',
+              pointerEvents: 'auto'
             }}
           >
             <div className="flex items-center gap-2">
@@ -858,6 +1028,253 @@ export const MapView = memo(function MapView({ radarEnabled, connectedUsers }: M
         )}
       </AnimatePresence>
 
+      {/* ---- OFFLINE SELECTION HUD ---- */}
+      <AnimatePresence>
+        {isSelectingOfflineArea && (
+          <motion.div
+            initial={{ y: 100, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: 100, opacity: 0 }}
+            className="absolute bottom-6 left-4 right-4 z-[400] p-4 rounded-3xl"
+            style={{
+              background: 'rgba(10, 25, 47, 0.98)',
+              backdropFilter: 'blur(30px)',
+              border: '1px solid rgba(0, 229, 255, 0.2)',
+              boxShadow: '0 12px 40px rgba(0,0,0,0.6)',
+              paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 16px)',
+            }}
+          >
+            <div className="flex flex-col gap-3">
+              <div className="flex justify-between items-start">
+                <div>
+                  <h4 className="text-white font-black text-sm tracking-tight">📥 DOWNLOAD DE MAPA</h4>
+                  <p className="text-[#8892b0] text-[10px] uppercase tracking-widest mt-0.5">
+                    {!offlineAreaBounds ? 'Toque em dois pontos para definir a área' : 'Área selecionada'}
+                  </p>
+                </div>
+                {offlineAreaBounds && (
+                  <div className="bg-[#00e5ff]/10 px-3 py-1 rounded-full border border-[#00e5ff]/20">
+                    <span className="text-[#00e5ff] font-bold text-[10px]">ESTIMATIVA: ~12.5 MB</span>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex gap-2">
+                <button
+                  onPointerDown={async () => {
+                    if (offlineAreaBounds) {
+                      // Mock download
+                      const id = crypto.randomUUID();
+                      useStore.getState().addOfflineRegion({
+                        name: `Área ${id.slice(0, 4)}`,
+                        size: '12.5 MB'
+                      });
+                      setIsSelectingOfflineArea(false);
+                      setOfflineAreaBounds(null);
+                      await hapticSuccess();
+                    }
+                  }}
+                  disabled={!offlineAreaBounds}
+                  className="flex-1 py-3.5 rounded-xl font-bold text-[#0a192f] text-sm disabled:opacity-30"
+                  style={{ background: 'linear-gradient(135deg, #00e5ff, #64ffda)' }}
+                >
+                  Confirmar Download
+                </button>
+                <button
+                  onPointerDown={() => {
+                    setIsSelectingOfflineArea(false);
+                    setOfflineAreaBounds(null);
+                    setOfflineStartPoint(null);
+                  }}
+                  className="px-5 py-3.5 rounded-xl bg-white/5 border border-white/10 text-white font-bold"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ---- MODAL: Detalhes do Waypoint ---- */}
+      <AnimatePresence>
+        {selectedWaypoint && (
+          <Modal onClose={() => setSelectedWaypoint(null)} title={selectedWaypoint.name}>
+            <div className="space-y-4">
+              <div className="flex gap-4">
+                <div className="flex-1 aspect-video bg-[#112240] rounded-2xl border border-white/10 flex items-center justify-center overflow-hidden relative">
+                  {selectedWaypoint.photo ? (
+                    <img src={selectedWaypoint.photo} className="w-full h-full object-cover" />
+                  ) : (
+                    <Camera className="text-[#8892b0]/30" size={32} />
+                  )}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  onPointerDown={async () => {
+                    // Lógica de Câmera Capacitor
+                    try {
+                      const { Camera: CapCamera, CameraResultType } = await import('@capacitor/camera');
+                      const image = await CapCamera.getPhoto({
+                        quality: 90,
+                        allowEditing: false,
+                        resultType: CameraResultType.Uri
+                      });
+                      useStore.getState().updateWaypoint(selectedWaypoint.id, { photo: image.webPath });
+                      setSelectedWaypoint(prev => prev ? { ...prev, photo: image.webPath } : null);
+                      await hapticSuccess();
+                    } catch (e) { console.error(e); }
+                  }}
+                  className="flex items-center justify-center gap-2 py-3 rounded-xl bg-white/5 border border-white/10 text-white font-bold text-xs"
+                >
+                  <Camera size={16} /> Foto
+                </button>
+                <button
+                  onPointerDown={async () => {
+                    // Mock Gravação de Áudio
+                    setIsRecordingAudio(!isRecordingAudio);
+                    await hapticMedium();
+                  }}
+                  className={`flex items-center justify-center gap-2 py-3 rounded-xl border font-bold text-xs ${isRecordingAudio ? 'bg-red-500/20 border-red-500 text-red-500' : 'bg-white/5 border-white/10 text-white'
+                    }`}
+                >
+                  <Mic size={16} /> {isRecordingAudio ? 'Gravando...' : 'Áudio'}
+                </button>
+              </div>
+
+              <div className="bg-[#112240] p-4 rounded-xl border border-white/10">
+                <p className="text-[10px] text-[#8892b0] uppercase tracking-widest mb-1">Coordenadas</p>
+                <p className="text-white font-mono text-xs">{selectedWaypoint.lat.toFixed(6)}, {selectedWaypoint.lng.toFixed(6)}</p>
+                <p className="text-[10px] text-[#8892b0] uppercase tracking-widest mt-3 mb-1">Criado em</p>
+                <p className="text-white text-xs">{format(selectedWaypoint.createdAt, 'dd/MM/yyyy HH:mm')}</p>
+              </div>
+
+              <button
+                onPointerDown={async () => {
+                  useStore.getState().removeWaypoint(selectedWaypoint.id);
+                  setSelectedWaypoint(null);
+                  await hapticHeavy();
+                }}
+                className="w-full py-3 rounded-xl text-red-500 font-bold bg-red-500/10 border border-red-500/20"
+              >
+                Excluir Waypoint
+              </button>
+            </div>
+          </Modal>
+        )}
+      </AnimatePresence>
+
+      {/* ---- MODAL: Pesca ---- */}
+      <AnimatePresence>
+        {showCatchModal && (
+          <Modal onClose={() => setShowCatchModal(false)} title="🐟 Registrar Captura">
+            <div className="space-y-4">
+              <div>
+                <label className="text-[#8892b0] text-[10px] uppercase font-bold tracking-widest mb-1 block">Título</label>
+                <input
+                  type="text"
+                  value={logTitle}
+                  onChange={(e) => setLogTitle(e.target.value)}
+                  className="w-full bg-[#112240] border border-white/10 rounded-xl px-4 py-3 text-white text-sm outline-none focus:border-[#64ffda]/50"
+                />
+              </div>
+              <div>
+                <label className="text-[#8892b0] text-[10px] uppercase font-bold tracking-widest mb-1 block">Espécie</label>
+                <input
+                  type="text"
+                  placeholder="Ex: Robalo, Garoupa..."
+                  value={catchSpecies}
+                  onChange={(e) => setCatchSpecies(e.target.value)}
+                  className="w-full bg-[#112240] border border-white/10 rounded-xl px-4 py-3 text-white text-sm outline-none focus:border-[#64ffda]/50"
+                />
+              </div>
+              <div className="flex gap-3">
+                <div className="flex-1">
+                  <label className="text-[#8892b0] text-[10px] uppercase font-bold tracking-widest mb-1 block">Peso (Kg)</label>
+                  <input
+                    type="number"
+                    value={catchWeight}
+                    onChange={(e) => setCatchWeight(e.target.value)}
+                    className="w-full bg-[#112240] border border-white/10 rounded-xl px-4 py-3 text-white text-sm outline-none focus:border-[#64ffda]/50"
+                  />
+                </div>
+                <div className="flex-1">
+                  <label className="text-[#8892b0] text-[10px] uppercase font-bold tracking-widest mb-1 block">Compr. (cm)</label>
+                  <input
+                    type="number"
+                    value={catchLength}
+                    onChange={(e) => setCatchLength(e.target.value)}
+                    className="w-full bg-[#112240] border border-white/10 rounded-xl px-4 py-3 text-white text-sm outline-none focus:border-[#64ffda]/50"
+                  />
+                </div>
+              </div>
+              <button
+                onPointerDown={handleSaveCatch}
+                className="w-full py-4 rounded-2xl font-black text-[#0a192f] text-base shadow-lg"
+                style={{ background: 'linear-gradient(135deg, #22c55e, #10b981)' }}
+              >
+                Salvar no Diário
+              </button>
+            </div>
+          </Modal>
+        )}
+      </AnimatePresence>
+
+      {/* ---- MODAL: Perigo / Ponto Comunitário ---- */}
+      <AnimatePresence>
+        {showHazardModal && (
+          <Modal onClose={() => setShowHazardModal(false)} title="⚠️ Alerta de Perigo">
+            <div className="space-y-4">
+              <div>
+                <label className="text-[#8892b0] text-[10px] uppercase font-bold tracking-widest mb-1 block">Tipo de Perigo</label>
+                <select
+                  value={hazardType}
+                  onChange={(e) => setHazardType(e.target.value as any)}
+                  className="w-full bg-[#112240] border border-white/10 rounded-xl px-4 py-3 text-white text-sm outline-none"
+                >
+                  <option value="hazard">⚠️ Obstáculo / Perigo</option>
+                  <option value="ramp">🚤 Rampa de Acesso</option>
+                  <option value="gas">⛽ Posto / Combustível</option>
+                  <option value="marina">⚓ Marina / Pier</option>
+                  <option value="hangout">🏝️ Ponto de Encontro</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-[#8892b0] text-[10px] uppercase font-bold tracking-widest mb-1 block">Descrição</label>
+                <textarea
+                  rows={2}
+                  value={hazardDesc}
+                  onChange={(e) => setHazardDesc(e.target.value)}
+                  placeholder="Detalhes sobre o local..."
+                  className="w-full bg-[#112240] border border-white/10 rounded-xl px-4 py-3 text-white text-sm outline-none"
+                />
+              </div>
+              <button
+                onPointerDown={async () => {
+                  if (!location) return;
+                  addCommunityMarker({
+                    lat: location.lat,
+                    lng: location.lng,
+                    type: hazardType,
+                    name: hazardType.toUpperCase(),
+                    description: hazardDesc,
+                    createdBy: 'user', // Mock user
+                  });
+                  setShowHazardModal(false);
+                  await hapticSuccess();
+                }}
+                className="w-full py-4 rounded-2xl font-black text-[#0a192f] text-base"
+                style={{ background: 'linear-gradient(135deg, #f59e0b, #d97706)' }}
+              >
+                Publicar no Radar
+              </button>
+            </div>
+          </Modal>
+        )}
+      </AnimatePresence>
+
       {/* ---- MODAL: Parar Gravação ---- */}
       <AnimatePresence>
         {showStopRecordingModal && (
@@ -900,10 +1317,16 @@ export const MapView = memo(function MapView({ radarEnabled, connectedUsers }: M
           >
             <div className="flex justify-between items-center mb-4">
               <h3 className="text-white font-bold text-lg">🗺️ Planejar Rota</h3>
-              <div className="text-right">
-                <p className="text-[10px] text-[#8892b0] uppercase tracking-widest">Distância</p>
+              <div className="text-right" onPointerDown={async () => {
+                setDistanceUnit(d => d === 'NM' ? 'KM' : 'NM');
+                await hapticLight();
+              }}>
+                <p className="text-[10px] text-[#8892b0] uppercase tracking-widest">Distância ({distanceUnit})</p>
                 <p className="text-[#64ffda] font-mono font-bold text-sm">
-                  {(calculateDistance(plannedRoutePoints) / 1852).toFixed(2)} NM
+                  {distanceUnit === 'NM'
+                    ? (calculateDistance(plannedRoutePoints) / 1852).toFixed(2) + ' NM'
+                    : (calculateDistance(plannedRoutePoints) / 1000).toFixed(2) + ' KM'
+                  }
                 </p>
               </div>
             </div>

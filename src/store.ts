@@ -123,6 +123,7 @@ export interface AnchorAlarm {
   radius: number;
   triggered?: boolean;
   acknowledged?: boolean;
+  zoomToAnchor?: boolean;
 }
 
 export interface OnlineUser {
@@ -136,9 +137,31 @@ export interface OnlineUser {
   sos?: boolean;
 }
 
+export interface MaintenanceRecord {
+  id: string;
+  user_id: string;
+  type: 'oil_change' | 'filter' | 'hull' | 'engine' | 'electrical' | 'other';
+  title: string;
+  description: string;
+  engine_hours?: number;
+  cost?: number;
+  mechanic?: string;
+  photo_url?: string;
+  next_due_hours?: number;
+  next_due_date?: number;
+  createdAt: number;
+}
+
+export interface EngineHours {
+  current: number;
+  lastUpdated: number;
+}
+
 export interface AppState {
   user: any | null;
   setUser: (user: any | null) => void;
+  isAuthLoading: boolean;
+  setIsAuthLoading: (val: boolean) => void;
   isOfflineMode: boolean;
   setOfflineMode: (isOffline: boolean) => void;
   location: Location | null;
@@ -236,6 +259,13 @@ export interface AppState {
   // Perfil do Usuário
   profile: UserProfile | null;
   setProfile: (profile: Partial<UserProfile>) => void;
+
+  // Manutenção
+  maintenanceRecords: MaintenanceRecord[];
+  addMaintenanceRecord: (record: Omit<MaintenanceRecord, "id" | "user_id" | "createdAt">) => Promise<void>;
+  removeMaintenanceRecord: (id: string) => Promise<void>;
+  engineHours: EngineHours;
+  updateEngineHours: (hours: number) => void;
 }
 
 export interface UserProfile {
@@ -255,10 +285,21 @@ export const useStore = create<AppState>()(
     (set, get) => ({
       user: null,
       setUser: (user) => set({ user }),
+      isAuthLoading: true,
+      setIsAuthLoading: (isAuthLoading) => set({ isAuthLoading }),
       isOfflineMode: false,
       setOfflineMode: (isOfflineMode) => set({ isOfflineMode }),
       location: null,
-      setLocation: (location) => set({ location }),
+      setLocation: (loc) => {
+        const prev = get().location;
+        // Diff check: ~2 metros (0.00002 graus)
+        if (prev &&
+          Math.abs(prev.lat - loc.lat) < 0.00002 &&
+          Math.abs(prev.lng - loc.lng) < 0.00002 &&
+          prev.heading === loc.heading &&
+          prev.speed === loc.speed) return;
+        set({ location: loc });
+      },
 
       waypoints: [],
       addWaypoint: (wp) => {
@@ -377,17 +418,36 @@ export const useStore = create<AppState>()(
       },
 
       plannedRoutes: [],
-      addPlannedRoute: (r) =>
+      addPlannedRoute: (r) => {
+        const id = crypto.randomUUID();
+        const createdAt = Date.now();
+        const newRoute = { ...r, id, createdAt };
         set((state) => ({
-          plannedRoutes: [
-            ...(state.plannedRoutes || []),
-            { ...r, id: crypto.randomUUID(), createdAt: Date.now() },
-          ],
-        })),
-      removePlannedRoute: (id) =>
+          plannedRoutes: [...(state.plannedRoutes || []), newRoute],
+        }));
+
+        const state = get();
+        if (state.user && !state.isOfflineMode) {
+          supabase.from('planned_routes').insert({
+            id,
+            user_id: state.user.id,
+            name: r.name,
+            points: r.points,
+            created_at: createdAt
+          }).then(({ error }) => { if (error) console.error("Erro ao salvar rota planejada:", error) });
+        }
+      },
+      removePlannedRoute: (id) => {
         set((state) => ({
           plannedRoutes: (state.plannedRoutes || []).filter((r) => r.id !== id),
-        })),
+        }));
+
+        const state = get();
+        if (state.user && !state.isOfflineMode) {
+          supabase.from('planned_routes').delete().eq('id', id)
+            .then(({ error }) => { if (error) console.error("Erro ao deletar rota planejada:", error) });
+        }
+      },
 
       communityMarkers: [],
       addCommunityMarker: (m) =>
@@ -599,41 +659,118 @@ export const useStore = create<AppState>()(
         onlineUsers: typeof updater === 'function' ? updater(state.onlineUsers) : updater
       })),
 
+      // Manutenção
+      maintenanceRecords: [],
+      addMaintenanceRecord: async (record) => {
+        const state = get();
+        if (!state.user) return;
+        const id = crypto.randomUUID();
+        const createdAt = Date.now();
+        const newRecord: MaintenanceRecord = {
+          ...record,
+          id,
+          user_id: state.user.id,
+          createdAt
+        };
+
+        set((s) => ({ maintenanceRecords: [...s.maintenanceRecords, newRecord] }));
+
+        if (!state.isOfflineMode) {
+          await supabase.from('maintenance_records').insert({
+            id,
+            user_id: state.user.id,
+            type: record.type,
+            title: record.title,
+            description: record.description,
+            engine_hours: record.engine_hours,
+            cost: record.cost,
+            mechanic: record.mechanic,
+            photo_url: record.photo_url,
+            next_due_hours: record.next_due_hours,
+            next_due_date: record.next_due_date ? new Date(record.next_due_date).toISOString() : null,
+            created_at: new Date(createdAt).toISOString()
+          });
+        }
+      },
+      removeMaintenanceRecord: async (id) => {
+        const state = get();
+        set((s) => ({ maintenanceRecords: s.maintenanceRecords.filter(r => r.id !== id) }));
+        if (state.user && !state.isOfflineMode) {
+          await supabase.from('maintenance_records').delete().eq('id', id);
+        }
+      },
+      engineHours: { current: 0, lastUpdated: Date.now() },
+      updateEngineHours: (current) => set({ engineHours: { current, lastUpdated: Date.now() } }),
+
       syncData: async () => {
         const state = get();
         if (!state.user || state.isOfflineMode) return;
 
         try {
-          const [wpRes, trRes] = await Promise.all([
+          const [wpRes, trRes, rtRes, maRes] = await Promise.all([
             supabase.from('waypoints').select('*'),
-            supabase.from('tracks').select('*')
+            supabase.from('tracks').select('*'),
+            supabase.from('planned_routes').select('*'),
+            supabase.from('maintenance_records').select('*'),
           ]);
 
           if (wpRes.data) {
-            const syncedWaypoints = wpRes.data.map(w => ({
-              id: w.id,
-              lat: w.lat,
-              lng: w.lng,
-              name: w.name,
-              icon: w.icon,
-              color: w.color,
-              createdAt: w.created_at,
-              audio: w.audio,
-              photo: w.photo
-            }));
-            set({ waypoints: syncedWaypoints });
+            set({
+              waypoints: wpRes.data.map(w => ({
+                id: w.id,
+                lat: w.lat,
+                lng: w.lng,
+                name: w.name,
+                icon: w.icon,
+                color: w.color,
+                createdAt: new Date(w.created_at).getTime(),
+                audio: w.audio,
+                photo: w.photo
+              }))
+            });
           }
 
           if (trRes.data) {
-            const syncedTracks = trRes.data.map(t => ({
-              id: t.id,
-              name: t.name,
-              points: t.points,
-              color: t.color,
-              createdAt: t.created_at,
-              visible: t.visible
-            }));
-            set({ tracks: syncedTracks });
+            set({
+              tracks: trRes.data.map(t => ({
+                id: t.id,
+                name: t.name,
+                points: t.points,
+                color: t.color,
+                createdAt: new Date(t.created_at).getTime(),
+                visible: t.visible
+              }))
+            });
+          }
+
+          if (rtRes.data) {
+            set({
+              plannedRoutes: rtRes.data.map(r => ({
+                id: r.id,
+                name: r.name,
+                points: r.points,
+                createdAt: new Date(r.created_at).getTime()
+              }))
+            });
+          }
+
+          if (maRes.data) {
+            set({
+              maintenanceRecords: maRes.data.map(m => ({
+                id: m.id,
+                user_id: m.user_id,
+                type: m.type,
+                title: m.title,
+                description: m.description,
+                engine_hours: m.engine_hours,
+                cost: m.cost,
+                mechanic: m.mechanic,
+                photo_url: m.photo_url,
+                next_due_hours: m.next_due_hours,
+                next_due_date: m.next_due_date ? new Date(m.next_due_date).getTime() : undefined,
+                createdAt: new Date(m.created_at).getTime()
+              }))
+            });
           }
         } catch (err) {
           console.error("Erro ao sincronizar dados:", err);

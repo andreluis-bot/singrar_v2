@@ -264,6 +264,8 @@ export const SettingsView = memo(function SettingsView() {
   const handleLogout = useCallback(async () => {
     await hapticHeavy();
     await supabase.auth.signOut();
+    useStore.getState().setUser(null);
+    useStore.getState().setOfflineMode(false);
   }, []);
 
   /* ============================================================
@@ -456,6 +458,49 @@ export const SettingsView = memo(function SettingsView() {
                 </button>
               );
             })}
+          </div>
+        </SettingsGroup>
+
+        {/* PERFIL DA EMBARCAÇÃO */}
+        <SettingsGroup title="🛥️ Perfil da Embarcação">
+          <div className="p-4 space-y-4">
+            <div>
+              <label className="text-[#8892b0] text-[10px] uppercase font-bold tracking-widest mb-1 block">Nome da Embarcação</label>
+              <input
+                type="text"
+                value={useStore.getState().profile?.vessel_name || ''}
+                onChange={(e) => useStore.getState().setProfile({ vessel_name: e.target.value })}
+                className="w-full bg-[#0a192f] border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm outline-none focus:border-[#64ffda]/50"
+                placeholder="Ex: SeaTrack One"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-[#8892b0] text-[10px] uppercase font-bold tracking-widest mb-1 block">Tipo / Modelo</label>
+                <input
+                  type="text"
+                  value={useStore.getState().profile?.vessel_type || ''}
+                  onChange={(e) => useStore.getState().setProfile({ vessel_type: e.target.value })}
+                  className="w-full bg-[#0a192f] border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm outline-none focus:border-[#64ffda]/50"
+                />
+              </div>
+              <div>
+                <label className="text-[#8892b0] text-[10px] uppercase font-bold tracking-widest mb-1 block">Motorização</label>
+                <input
+                  type="text"
+                  value={useStore.getState().profile?.engine || ''}
+                  onChange={(e) => useStore.getState().setProfile({ engine: e.target.value })}
+                  className="w-full bg-[#0a192f] border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm outline-none focus:border-[#64ffda]/50"
+                />
+              </div>
+            </div>
+            <SettingToggle
+              icon={<Radio size={16} />}
+              label="Visibilidade no Radar"
+              description="Compartilhar sua posição com outros"
+              value={useStore.getState().profile?.is_public ?? true}
+              onChange={(v) => useStore.getState().setProfile({ is_public: v })}
+            />
           </div>
         </SettingsGroup>
 

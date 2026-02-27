@@ -33,10 +33,9 @@ export function ProfileView() {
     };
 
     const handleLogout = async () => {
-        if (!isOfflineMode) {
-            await supabase.auth.signOut();
-        }
-        window.location.reload();
+        await supabase.auth.signOut();
+        useStore.getState().setUser(null);
+        useStore.getState().setOfflineMode(false);
     };
 
     return (

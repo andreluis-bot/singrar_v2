@@ -37,9 +37,10 @@ import {
   Waves,
   BellRing,
   Radio,
-  Wind, // Added Wind
-  Droplets, // Added Droplets
-  User, // Added User for Profile
+  Wind,
+  Droplets,
+  User,
+  Wrench,
 } from 'lucide-react';
 import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
 
@@ -53,6 +54,7 @@ import { SettingsView } from './views/SettingsView';
 import { EventsView } from './views/EventsView';
 import { AchievementsView } from './views/AchievementsView';
 import { ProfileView } from './views/ProfileView';
+import { MaintenanceView } from './views/MaintenanceView';
 import { AuthView } from './views/AuthView';
 import { InstallPrompt } from './components/InstallPrompt';
 import { SkeletonScreen } from './components/SkeletonScreen';
@@ -295,10 +297,13 @@ export default function App() {
   const setEmergency = useStore((s) => s.setEmergency);
   const collisionCountdown = useStore((s) => s.collisionCountdown);
   const setCollisionCountdown = useStore((s) => s.setCollisionCountdown);
+  const setWeatherAlert = useStore((s) => s.setWeatherAlert);
   const weatherAlert = useStore((s) => s.weatherAlert);
   const location = useStore((s) => s.location);
   const speedUnit = useStore((s) => s.speedUnit);
   const setSpeedUnit = useStore((s) => s.setSpeedUnit);
+  const setDeviceHeading = useStore((s) => s.setDeviceHeading);
+  const deviceHeading = useStore((s) => s.deviceHeading);
   const navItems = useStore((s) => s.navItems);
   const connectedUsers = useStore((s) => s.onlineUsers) ?? {};
   const radarEnabled = useStore((s) => s.settings?.radarEnabled);
@@ -315,6 +320,8 @@ export default function App() {
   const [activeTab, setActiveTabRaw] = useState<Tab>('map');
   const [prevTab, setPrevTab] = useState<Tab>('map');
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [isSelectingOfflineArea, setIsSelectingOfflineArea] = useState(false);
+  const [offlineAreaBounds, setOfflineAreaBounds] = useState<L.LatLngBounds | null>(null);
   const [isAppReady, setIsAppReady] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(!user && !isOfflineMode);
 
@@ -375,7 +382,6 @@ export default function App() {
 
       // Pequeno delay para garantir que assets carregaram
       await new Promise((r) => setTimeout(r, 300));
-
       try {
         await SplashScreen.hide({ fadeOutDuration: 400 });
       } catch { /* browser */ }
@@ -386,20 +392,43 @@ export default function App() {
     init();
   }, []);
 
-  // Auth listener agora apenas atualiza o estado, não bloqueia o render
+  const setUser = useStore((s) => s.setUser);
+  const setIsAuthLoading = useStore((s) => s.setIsAuthLoading);
+  const setOfflineMode = useStore((s) => s.setOfflineMode);
+
+  const handleSignOut = useCallback(async () => {
+    await supabase.auth.signOut();
+    setUser(null);
+    setOfflineMode(false);
+    await hapticHeavy();
+  }, [setUser, setOfflineMode]);
+
+  /* --- Auth Listener & Session --- */
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      useStore.getState().setUser(session?.user ?? null);
-      if (session?.user) useStore.getState().syncData();
-    });
+    let mounted = true;
+
+    async function initSession() {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (mounted) {
+        setUser(session?.user ?? null);
+        setIsAuthLoading(false);
+      }
+    }
+
+    initSession();
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      useStore.getState().setUser(session?.user ?? null);
-      if (session?.user) useStore.getState().syncData();
+      if (mounted) {
+        setUser(session?.user ?? null);
+        setIsAuthLoading(false);
+      }
     });
 
-    return () => subscription.unsubscribe();
-  }, []);
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, [setUser, setIsAuthLoading]);
 
   /* --- Radar Realtime --- */
   const radarChannelRef = useRef<RealtimeChannel | null>(null);
@@ -433,6 +462,8 @@ export default function App() {
             lng: location.lng,
             heading: location.heading,
             speed: location.speed,
+            isAnchored: anchorAlarm.active,
+            sos: emergency,
             updatedAt: Date.now(),
           });
         }
@@ -540,31 +571,70 @@ export default function App() {
   /* --- Weather Alert --- */
   useEffect(() => {
     if (weatherAlert !== null) {
-      playAlarmSound();
+      playAlarmSound(900, 1000);
       hapticWarning();
     }
   }, [weatherAlert]);
+
+  /* --- Barômetro Inteligente --- */
+  const lastBaroCheck = useRef<number>(0);
+  useEffect(() => {
+    if (!location || isOfflineMode) return;
+
+    const checkBaro = async () => {
+      const now = Date.now();
+      if (now - lastBaroCheck.current < 3600000) return; // 1 hora
+
+      try {
+        const res = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${location.lat}&longitude=${location.lng}&hourly=surface_pressure&past_days=1&forecast_days=1`);
+        const data = await res.json();
+
+        if (data.hourly && data.hourly.surface_pressure) {
+          const pressures = data.hourly.surface_pressure;
+          const current = pressures[pressures.length - 1]; // Mock simple: as APIs costumam retornar arrays de forecast + past
+          // Simplificação: vamos pegar a variação nas últimas 3 amostras horárias
+          const threeHoursAgo = pressures[pressures.length - 4];
+
+          if (threeHoursAgo && current && (threeHoursAgo - current) >= 2) {
+            setWeatherAlert("ALERTA CRÍTICO: Queda rápida de pressão (>2hPa/3h). Tempestade iminente. Retorne agora!");
+            hapticError();
+          } else if (threeHoursAgo && current && (threeHoursAgo - current) >= 1) {
+            setWeatherAlert("CAUTELA: Pressão em declínio. Tempo pode fechar.");
+          }
+        }
+        lastBaroCheck.current = now;
+      } catch (e) { console.error(e); }
+    };
+    checkBaro();
+    const id = setInterval(checkBaro, 3600000);
+    return () => clearInterval(id);
+  }, [location, isOfflineMode, setWeatherAlert]);
 
   /* --- Achievements --- */
   useEffect(() => {
     checkAchievements();
   }, [tracksCount, waypointsCount, logEntriesCount, eventsCount, checkAchievements]);
 
-  /* --- Acelerômetro (colisão física) --- */
+  /* --- Device Orientation (Bússola) --- */
   useEffect(() => {
-    const handleMotion = (e: DeviceMotionEvent) => {
-      if (collisionCountdown !== null || emergency) return;
-      const acc = e.acceleration;
-      if (!acc) return;
-      const total = Math.sqrt((acc.x || 0) ** 2 + (acc.y || 0) ** 2 + (acc.z || 0) ** 2);
-      if (total > 25) {
-        setCollisionCountdown(30);
-        hapticError();
-      }
+    const handleOrientation = (e: any) => {
+      const heading = e.webkitCompassHeading ?? (e.alpha ? 360 - e.alpha : null);
+      if (heading !== null) setDeviceHeading(heading);
     };
-    window.addEventListener('devicemotion', handleMotion);
-    return () => window.removeEventListener('devicemotion', handleMotion);
-  }, [collisionCountdown, emergency, setCollisionCountdown]);
+
+    if (window.DeviceOrientationEvent) {
+      window.addEventListener('deviceorientation', handleOrientation);
+    } else if ((window as any).DeviceOrientationAbsoluteEvent) {
+      window.addEventListener('deviceorientationabsolute', handleOrientation);
+    }
+
+    return () => {
+      window.removeEventListener('deviceorientation', handleOrientation);
+      window.removeEventListener('deviceorientationabsolute', handleOrientation);
+    };
+  }, [setDeviceHeading]);
+
+  /* --- Acelerômetro (colisão física) --- */
 
   /* --- Funções --- */
   // SOS Loop (Sound + Haptics)
@@ -601,6 +671,19 @@ export default function App() {
     setEmergency(false);
     setCollisionCountdown(null);
   }, [setEmergency, setCollisionCountdown]);
+
+  // Persist SOS in Supabase
+  useEffect(() => {
+    if (emergency && user && !isOfflineMode) {
+      supabase.from('emergencies').insert({
+        user_id: user.id,
+        lat: locationRef.current?.lat,
+        lng: locationRef.current?.lng,
+        type: 'sos',
+        status: 'active'
+      }).then(({ error }) => { if (error) console.error("Erro ao persistir SOS:", error); });
+    }
+  }, [emergency, user, isOfflineMode]);
 
   /* ============================================================
      ANIMAÇÃO DE TRANSIÇÃO DE TABS — estilo iOS nativo
@@ -639,11 +722,11 @@ export default function App() {
   /* ============================================================
      RENDER — Loading
      ============================================================ */
-  if (!isAppReady) {
+  const isAuthLoading = useStore((s) => s.isAuthLoading);
+
+  if (!isAppReady || isAuthLoading) {
     return (
-      <div
-        className="fixed inset-0 flex flex-col items-center justify-center bg-[#0a192f]"
-      >
+      <div className="fixed inset-0 flex flex-col items-center justify-center bg-[#0a192f]">
         <motion.div
           initial={{ scale: 0.8, opacity: 0 }}
           animate={{ scale: [0.8, 1.1, 1], opacity: 1 }}
@@ -682,10 +765,6 @@ export default function App() {
     );
   }
 
-  /* ============================================================
-     RENDER — Auth
-     ============================================================  // O SplashScreen será escondido sempre independentemente de ter user ou não
-  
   /* ============================================================
      RENDER — App
      ============================================================ */
@@ -769,6 +848,7 @@ export default function App() {
             {activeTab === 'weather' && <WeatherView />}
             {activeTab === 'tides' && <TidesView />}
             {activeTab === 'logbook' && <LogbookView />}
+            {activeTab === 'maintenance' && <MaintenanceView />}
             {activeTab === 'events' && <EventsView />}
             {activeTab === 'achievements' && <AchievementsView />}
             {activeTab === 'profile' && <ProfileView />}
@@ -868,6 +948,12 @@ export default function App() {
                     onClick={() => { setActiveTab('logbook'); setIsMenuOpen(false); }}
                   />
 
+                  <DrawerItem
+                    icon={<Wrench size={20} />}
+                    label="Manutenção (Horímetro)"
+                    active={activeTab === 'maintenance'}
+                    onClick={() => { setActiveTab('maintenance'); setIsMenuOpen(false); }}
+                  />
                   <div className="mt-auto pt-4 border-t border-white/8">
                     <DrawerItem
                       icon={<Settings size={20} />}
