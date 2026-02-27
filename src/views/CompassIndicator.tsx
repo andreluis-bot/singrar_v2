@@ -54,16 +54,16 @@ export const CompassIndicator = memo(function CompassIndicator() {
 
       // Altura do tick
       const isMajor = deg % 45 === 0;
-      const isMid = deg % 15 === 0;
-      const tickH = isMajor ? 14 : isMid ? 9 : 5;
-      const tickY = H - 14;
+      const isMid   = deg % 15 === 0;
+      const tickH   = isMajor ? 14 : isMid ? 9 : 5;
+      const tickY   = H - 14;
 
       // Cor do tick
       ctx.strokeStyle = isMajor
         ? 'rgba(100,255,218,0.9)'
         : isMid
-          ? 'rgba(255,255,255,0.5)'
-          : 'rgba(255,255,255,0.2)';
+        ? 'rgba(255,255,255,0.5)'
+        : 'rgba(255,255,255,0.2)';
       ctx.lineWidth = isMajor ? 1.5 : 1;
 
       ctx.beginPath();
@@ -127,8 +127,6 @@ export const CompassIndicator = memo(function CompassIndicator() {
       height={44}
       style={{
         display: 'block',
-        width: '100%',
-        maxWidth: '280px',
         // Máscara de fade nas bordas (efeito de rolagem suave)
         WebkitMaskImage: 'linear-gradient(to right, transparent 0%, black 15%, black 85%, transparent 100%)',
         maskImage: 'linear-gradient(to right, transparent 0%, black 15%, black 85%, transparent 100%)',

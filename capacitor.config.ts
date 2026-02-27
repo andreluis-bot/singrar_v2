@@ -1,8 +1,8 @@
 import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
-  appId: 'com.seatrackpro.app',
-  appName: 'SeaTrack Pro',
+  appId: 'com.singrar.v2',
+  appName: 'SingrarV2',
   webDir: 'dist',
 
   // IMPORTANTE: não usar bundledWebRuntime no Capacitor 7+

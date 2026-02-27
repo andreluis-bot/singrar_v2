@@ -1,57 +1,80 @@
-import React, { useEffect } from 'react';
+/**
+ * WeatherOverlay — Camadas Meteorológicas Reais no Mapa
+ *
+ * CORREÇÕES APLICADAS:
+ * - Removido iframe do Windy (X-Frame-Options bloqueia na maioria dos browsers)
+ * - Substituído por TileLayer do OpenWeatherMap (tiles HTTP reais, sem CORS)
+ * - Camada não é recriada a cada update de GPS (deps corretas: apenas `type`)
+ * - Se não houver VITE_OWM_KEY no .env, usa tiles públicos de fallback
+ * - opacity e zIndex corretos para não interferir nos controles do mapa
+ */
+
+import { useEffect, useRef, memo } from 'react';
 import { useMap } from 'react-leaflet';
 import L from 'leaflet';
 
-interface WindyOverlayProps {
-    lat: number;
-    lng: number;
-    type: 'wind' | 'rain';
+interface WeatherOverlayProps {
+  type: 'wind' | 'rain';
+  opacity?: number;
 }
 
-export const WindyOverlay = ({ lat, lng, type }: WindyOverlayProps) => {
-    const map = useMap();
+const OWM_KEY = (import.meta as any).env?.VITE_OWM_KEY ?? '';
 
-    useEffect(() => {
-        // Definindo o overlay como um iframe posicionado absolutamente
-        // O Windy permite configurar via Iframe mas o ideal seria API de Tiles.
-        // Como alternativa solicitado, usaremos iframe do Windy configurado para a posição.
+function getTileUrl(type: 'wind' | 'rain'): string {
+  if (OWM_KEY) {
+    const layer = type === 'wind' ? 'wind_new' : 'precipitation_new';
+    return `https://tile.openweathermap.org/map/${layer}/{z}/{x}/{y}.png?appid=${OWM_KEY}`;
+  }
+  // Fallback público (RainViewer para chuva, genérico para vento)
+  if (type === 'rain') {
+    return 'https://tilecache.rainviewer.com/v2/coverage/0/256/{z}/{x}/{y}/2/1_1.png';
+  }
+  // Sem chave e sem fallback público para vento — retorna vazio
+  return '';
+}
 
-        const layerId = `windy-overlay-${type}`;
-        let overlayDiv = document.getElementById(layerId);
+export const WindyOverlay = memo(function WindyOverlay({
+  type,
+  opacity = 0.55,
+}: WeatherOverlayProps) {
+  const map = useMap();
+  const layerRef = useRef<L.TileLayer | null>(null);
+  const currentTypeRef = useRef<string>('');
 
-        if (!overlayDiv) {
-            overlayDiv = L.DomUtil.create('div', 'windy-map-overlay', map.getContainer());
-            overlayDiv.id = layerId;
-            overlayDiv.style.position = 'absolute';
-            overlayDiv.style.top = '0';
-            overlayDiv.style.left = '0';
-            overlayDiv.style.width = '100%';
-            overlayDiv.style.height = '100%';
-            overlayDiv.style.zIndex = '50'; // Abaixo de UI mas acima de tiles
-            overlayDiv.style.pointerEvents = 'none'; // Não interfere no mapa Leaflet
-            overlayDiv.style.opacity = '0.5';
-        }
+  useEffect(() => {
+    // Não recria se o tipo não mudou
+    if (currentTypeRef.current === type && layerRef.current) return;
+    currentTypeRef.current = type;
 
-        const zoom = map.getZoom();
-        const overlayType = type === 'wind' ? 'wind' : 'rain';
+    // Remove camada anterior se existir
+    if (layerRef.current) {
+      map.removeLayer(layerRef.current);
+      layerRef.current = null;
+    }
 
-        // URL amigável do Windy para iframe
-        const windyUrl = `https://embed.windy.com/embed2.html?lat=${lat}&lon=${lng}&zoom=${zoom}&level=surface&overlay=${overlayType}&menu=&message=&marker=&calendar=&pressure=&type=map&location=coordinates&detail=&detailLat=${lat}&detailLon=${lng}&metricWind=kt&metricTemp=%C2%B0C&radarRange=1`;
+    const url = getTileUrl(type);
+    if (!url) return; // Sem URL disponível
 
-        overlayDiv.innerHTML = `<iframe 
-      src="${windyUrl}" 
-      width="100%" 
-      height="100%" 
-      frameborder="0" 
-      style="border:0; pointer-events: none;"
-    ></iframe>`;
+    const layer = L.tileLayer(url, {
+      opacity,
+      zIndex: 200,
+      maxZoom: 18,
+      tileSize: 256,
+      crossOrigin: 'anonymous',
+      errorTileUrl:
+        'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7',
+    });
 
-        return () => {
-            if (overlayDiv && overlayDiv.parentNode) {
-                overlayDiv.parentNode.removeChild(overlayDiv);
-            }
-        };
-    }, [map, lat, lng, type]);
+    layer.addTo(map);
+    layerRef.current = layer;
 
-    return null;
-};
+    return () => {
+      if (layerRef.current) {
+        map.removeLayer(layerRef.current);
+        layerRef.current = null;
+      }
+    };
+  }, [map, type, opacity]);
+
+  return null;
+});

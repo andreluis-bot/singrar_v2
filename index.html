@@ -5,8 +5,9 @@
   <meta charset="UTF-8" />
   <link rel="icon" type="image/svg+xml" href="/anchor.svg" />
 
-  <!-- CRÍTICO: viewport-fit=cover para safe areas iOS -->
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
+  <!-- CRÍTICO: viewport-fit=cover para safe areas iOS e bloqueio rigoroso de scale -->
+  <meta name="viewport"
+    content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, viewport-fit=cover" />
 
   <!-- PWA / App feel -->
   <meta name="mobile-web-app-capable" content="yes" />
@@ -130,6 +131,7 @@
       font-family: inherit !important;
       height: 100% !important;
       width: 100% !important;
+      touch-action: none !important;
     }
 
     /* Fix popup estilo mobile */
